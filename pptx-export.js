@@ -6,7 +6,8 @@
     muted: "808795",
     accent: "C4171D",
     accentSoft: "FBEAEC",
-    correct: "1A7A4C"
+    correct: "1A7A4C",
+    correctSoft: "DFF3E7"
   };
 
   const SLIDE_W = 13.33;
@@ -36,6 +37,14 @@
 
   const FONT = { english: 26, label: 11, body: 18, comment: 13 };
   const FONT_FLOOR = { english: 15, label: 9, body: 12, comment: 9 };
+
+  // Gaps are explicit offsets applied when positioning the next element, not
+  // padding folded silently into a box's own height (that was the earlier
+  // bug: the "gap" was reserved but never actually used to push anything
+  // down, so text ended up flush against text with no visible breathing room).
+  const HEADER_GAP = 0.05; // label/number -> its own body text
+  const COMMENT_GAP = 0.08; // wrong-answer body -> its comment
+  const ROW_GAP = 0.2; // space after one row before the next begins
 
   function lineHeightIn(fontPt) {
     return fontPt * LINE_HEIGHT_MULT * PT_TO_IN;
@@ -97,32 +106,38 @@
     const fontPt = scaledFont(FONT.english, FONT_FLOOR.english, scale);
     const lines = estimateLines(text, charsPerLine(CONTENT_W, fontPt, CHAR_WIDTH_RATIO.latinBold));
     const numberH = 0.3 * scale;
+    const headerGap = HEADER_GAP * scale;
     const bodyH = lines * lineHeightIn(fontPt);
-    return { fontPt, lines, numberH, bodyH, total: numberH + bodyH + 0.1 * scale };
+    return { fontPt, lines, numberH, headerGap, bodyH, total: numberH + headerGap + bodyH + ROW_GAP * scale };
   }
 
   // Measures an answer block (label + body + optional comment) at a given scale.
   function measureAnswerBlock(bodyText, comment, scale) {
     const labelH = 0.28 * scale;
+    const headerGap = HEADER_GAP * scale;
     const bodyFontPt = scaledFont(FONT.body, FONT_FLOOR.body, scale);
     const bodyLines = estimateLines(bodyText, charsPerLine(BODY_W, bodyFontPt, CHAR_WIDTH_RATIO.korean));
     const bodyH = bodyLines * lineHeightIn(bodyFontPt);
 
     let commentFontPt = 0;
+    let commentGap = 0;
     let commentH = 0;
     if (comment) {
       commentFontPt = scaledFont(FONT.comment, FONT_FLOOR.comment, scale);
       const commentLines = estimateLines(comment, charsPerLine(BODY_W, commentFontPt, CHAR_WIDTH_RATIO.korean));
-      commentH = 0.05 * scale + commentLines * lineHeightIn(commentFontPt);
+      commentGap = COMMENT_GAP * scale;
+      commentH = commentLines * lineHeightIn(commentFontPt);
     }
 
     return {
       bodyFontPt,
       commentFontPt,
       labelH,
+      headerGap,
       bodyH,
+      commentGap,
       commentH,
-      total: labelH + bodyH + commentH + 0.12 * scale
+      total: labelH + headerGap + bodyH + commentGap + commentH + ROW_GAP * scale
     };
   }
 
@@ -238,9 +253,9 @@
     });
   }
 
-  function renderAnswerBlock(pptx, slide, { y, color, label, bodyText, comment, scale }) {
+  function renderAnswerBlock(pptx, slide, { y, color, label, bodyText, comment, scale, isModel }) {
     const measured = measureAnswerBlock(bodyText, comment, scale);
-    addBar(pptx, slide, MARGIN_X, y + 0.04, measured.total - 0.08, color);
+    addBar(pptx, slide, MARGIN_X, y + 0.04, measured.total - ROW_GAP * scale - 0.08, color);
 
     slide.addText(label, {
       x: MARGIN_X + 0.22,
@@ -256,8 +271,11 @@
       wrap: false
     });
 
-    const bodyY = y + measured.labelH;
-    slide.addText(textToRuns(bodyText, { fontFace: "Malgun Gothic", fontSize: measured.bodyFontPt, color: COLOR.ink }), {
+    const bodyY = y + measured.labelH + measured.headerGap;
+    const bodyOptions = isModel
+      ? { fontFace: "Malgun Gothic", fontSize: measured.bodyFontPt, color: COLOR.correct, bold: true, highlight: COLOR.correctSoft }
+      : { fontFace: "Malgun Gothic", fontSize: measured.bodyFontPt, color: COLOR.ink };
+    slide.addText(textToRuns(bodyText, bodyOptions), {
       x: MARGIN_X + 0.22,
       y: bodyY,
       w: BODY_W,
@@ -269,7 +287,7 @@
     if (comment) {
       slide.addText(textToRuns(comment, { fontFace: "Malgun Gothic", fontSize: measured.commentFontPt, italic: true, color: COLOR.muted }), {
         x: MARGIN_X + 0.22,
-        y: bodyY + measured.bodyH,
+        y: bodyY + measured.bodyH + measured.commentGap,
         w: BODY_W,
         h: measured.commentH,
         valign: "top",
@@ -305,7 +323,7 @@
       });
       slide.addText(textToRuns(row.sentence.english, { fontFace: "Arial", fontSize: measured.fontPt, bold: true, color: COLOR.ink }), {
         x: MARGIN_X,
-        y: y + measured.numberH,
+        y: y + measured.numberH + measured.headerGap,
         w: CONTENT_W,
         h: measured.bodyH,
         valign: "top",
@@ -337,7 +355,8 @@
         label: "정답",
         color: COLOR.correct,
         bodyText: row.sentence.model,
-        comment: null
+        comment: null,
+        isModel: true
       });
     }
   }
