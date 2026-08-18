@@ -22,7 +22,7 @@
   // this many are ever shown on screen at once: once a batch of this size
   // has been revealed, the next click clears the slate and starts a fresh
   // batch from there, instead of rolling old ones off one at a time.
-  const MAX_VISIBLE_WRONG = 4;
+  const MAX_VISIBLE_WRONG = 5;
 
   // Real point/inch text metrics, not guessed character-per-line ratios.
   // Korean (Malgun Gothic) glyphs are close to full-width (~1em advance);
