@@ -19,9 +19,9 @@
 
   // A sentence can accumulate one wrong answer per student -- with a full
   // class that can be a lot. Rather than growing the slide forever, only
-  // this many are ever shown on screen at once; each new click still
-  // reveals the next student's mistake, but the oldest one on screen rolls
-  // off to make room.
+  // this many are ever shown on screen at once: once a batch of this size
+  // has been revealed, the next click clears the slate and starts a fresh
+  // batch from there, instead of rolling old ones off one at a time.
   const MAX_VISIBLE_WRONG = 4;
 
   // Real point/inch text metrics, not guessed character-per-line ratios.
@@ -126,14 +126,17 @@
     };
   }
 
-  // The last MAX_VISIBLE_WRONG answers revealed so far -- used both to pick
-  // what's on screen and to size the slot generously (sizing is based on
-  // the whole set, so the box never has to resize as content rotates
-  // through it).
+  // Answers revealed so far, within the current batch of MAX_VISIBLE_WRONG --
+  // e.g. with 9 wrong answers and a cap of 4: reveals 1-4 fill the first
+  // batch, the 5th reveal clears the slate and starts batch two (5-8), the
+  // 9th clears again and starts batch three (just 9). Sizing is based on
+  // the whole set regardless, so the box never has to resize as content
+  // rotates through it.
   function visibleWindow(wrongAnswers, revealedCount) {
+    if (revealedCount <= 0) return [];
     const cap = Math.min(wrongAnswers.length, MAX_VISIBLE_WRONG);
-    const start = Math.max(0, revealedCount - cap);
-    return wrongAnswers.slice(start, revealedCount);
+    const batchStart = Math.floor((revealedCount - 1) / cap) * cap;
+    return wrongAnswers.slice(batchStart, revealedCount);
   }
 
   // Builds the full row list for a slide group. English/divider rows are
