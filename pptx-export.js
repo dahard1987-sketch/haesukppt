@@ -16,6 +16,13 @@
   const TOP_Y = 0.7;
   const BOTTOM_Y = 6.9;
 
+  // A sentence can accumulate one wrong answer per student -- with a full
+  // class that can be a lot. Rather than growing the slide forever (and
+  // shrinking every box into illegibility), only this many are ever shown
+  // on screen at once; each new click still reveals the next student's
+  // mistake, but the oldest one on screen rolls off to make room.
+  const MAX_VISIBLE_WRONG = 4;
+
   function flattenMarkup(nodes, style) {
     let runs = [];
     nodes.forEach(node => {
@@ -59,20 +66,35 @@
     return Math.max(1, Math.ceil(plain.length / charsPerLine));
   }
 
-  // Builds the full (all-revealed) row list for a slide group, each row tagged
-  // with the reveal step at which it should first appear. English/divider rows
-  // are structural and always visible; wrong/model rows appear one step at a
-  // time, in sentence order, with the model answer last for each sentence.
+  // The last MAX_VISIBLE_WRONG answers revealed so far, oldest first --
+  // used both to pick what's on screen and to size the box generously
+  // (sizing is based on the whole set, so it never has to change size
+  // when the content rotating through it changes).
+  function visibleWindow(wrongAnswers, revealedCount) {
+    const cap = Math.min(wrongAnswers.length, MAX_VISIBLE_WRONG);
+    const start = Math.max(0, revealedCount - cap);
+    return wrongAnswers.slice(start, revealedCount);
+  }
+
+  // Builds the full row list for a slide group. English/divider rows are
+  // structural and always visible. Each sentence gets a fixed number of
+  // wrong-answer "slots" (capped at MAX_VISIBLE_WRONG) whose position never
+  // moves; which wrong answer occupies a slot depends on the reveal stage
+  // (see visibleWindow). The model answer is always the sentence's last step.
   function buildRows(sentences) {
     const rows = [];
     let step = 0;
     sentences.forEach((sentence, sentenceIndex) => {
       if (sentenceIndex > 0) rows.push({ kind: "divider", step: 0 });
       rows.push({ kind: "english", sentence, step: 0 });
-      sentence.wrongAnswers.forEach(wrong => {
-        step += 1;
-        rows.push({ kind: "wrong", wrong, step });
-      });
+
+      const sentenceStepStart = step;
+      const slotCount = Math.min(sentence.wrongAnswers.length, MAX_VISIBLE_WRONG);
+      for (let slotIndex = 0; slotIndex < slotCount; slotIndex += 1) {
+        rows.push({ kind: "wrongSlot", sentence, slotIndex, sentenceStepStart });
+      }
+
+      step += sentence.wrongAnswers.length;
       step += 1;
       rows.push({ kind: "model", sentence, step });
     });
@@ -82,17 +104,19 @@
   function rowWeight(row) {
     if (row.kind === "divider") return 0.3;
     if (row.kind === "english") return 1.2 + 0.4 * estimateLines(row.sentence.english, 46);
-    if (row.kind === "wrong") {
-      const lines = estimateLines(row.wrong.text, 58);
-      return 1 + 0.4 * lines + (row.wrong.comment ? 0.65 : 0);
+    if (row.kind === "wrongSlot") {
+      // Sized for whichever answer could end up here, not just the first one.
+      const maxLines = row.sentence.wrongAnswers.reduce((max, w) => Math.max(max, estimateLines(w.text, 58)), 1);
+      const anyComment = row.sentence.wrongAnswers.some(w => w.comment);
+      return 1 + 0.4 * maxLines + (anyComment ? 0.65 : 0);
     }
     if (row.kind === "model") return 1 + 0.4 * estimateLines(row.sentence.model, 58);
     return 1;
   }
 
-  // Computes a fixed y/height for every row up front (based on the fully
-  // revealed content), so a row never moves between the reveal-stage slides
-  // of the same group -- only new rows appear below what's already there.
+  // Computes a fixed y/height for every row up front, so a row never moves
+  // between the reveal-stage slides of the same group -- only new rows
+  // appear below what's already there, and slot contents rotate in place.
   function layoutRows(sentences) {
     const { rows, totalSteps } = buildRows(sentences);
     const totalWeight = rows.reduce((sum, row) => sum + rowWeight(row), 0);
@@ -121,7 +145,44 @@
     });
   }
 
-  function renderRow(pptx, slide, row) {
+  function renderAnswerBlock(pptx, slide, { y, height, label, color, bodyText, comment }) {
+    addBar(pptx, slide, MARGIN_X, y + 0.04, height - 0.08, color);
+    slide.addText(label, {
+      x: MARGIN_X + 0.22,
+      y,
+      w: CONTENT_W - 0.22,
+      h: 0.28,
+      fontSize: 11,
+      bold: true,
+      color,
+      charSpacing: 1.2,
+      fontFace: "Arial",
+      fit: "shrink",
+      wrap: false
+    });
+    slide.addText(textToRuns(bodyText, { fontFace: "Malgun Gothic", fontSize: 19, color: COLOR.ink }), {
+      x: MARGIN_X + 0.22,
+      y: y + 0.3,
+      w: CONTENT_W - 0.22,
+      h: comment ? height - 0.65 : height - 0.3,
+      valign: "top",
+      fit: "shrink",
+      wrap: true
+    });
+    if (comment) {
+      slide.addText(textToRuns(comment, { fontFace: "Malgun Gothic", fontSize: 13, italic: true, color: COLOR.muted }), {
+        x: MARGIN_X + 0.22,
+        y: y + height - 0.35,
+        w: CONTENT_W - 0.22,
+        h: 0.35,
+        valign: "top",
+        fit: "shrink",
+        wrap: true
+      });
+    }
+  }
+
+  function renderRow(pptx, slide, row, stage) {
     const { kind, y, height } = row;
 
     if (kind === "divider") {
@@ -157,42 +218,30 @@
       return;
     }
 
-    const isWrong = kind === "wrong";
-    const color = isWrong ? COLOR.accent : COLOR.correct;
-    const label = isWrong ? "오답" : "정답";
-    const bodyText = isWrong ? row.wrong.text : row.sentence.model;
-    const comment = isWrong ? row.wrong.comment : null;
+    if (kind === "wrongSlot") {
+      const revealed = Math.min(Math.max(0, stage - row.sentenceStepStart), row.sentence.wrongAnswers.length);
+      const window = visibleWindow(row.sentence.wrongAnswers, revealed);
+      const wrong = window[row.slotIndex];
+      if (!wrong) return;
+      renderAnswerBlock(pptx, slide, {
+        y,
+        height,
+        label: wrong.name || "오답",
+        color: COLOR.accent,
+        bodyText: wrong.text,
+        comment: wrong.comment
+      });
+      return;
+    }
 
-    addBar(pptx, slide, MARGIN_X, y + 0.04, height - 0.08, color);
-    slide.addText(label, {
-      x: MARGIN_X + 0.22,
-      y,
-      w: 2,
-      h: 0.28,
-      fontSize: 11,
-      bold: true,
-      color,
-      charSpacing: 1.2,
-      fontFace: "Arial"
-    });
-    slide.addText(textToRuns(bodyText, { fontFace: "Malgun Gothic", fontSize: 19, color: COLOR.ink }), {
-      x: MARGIN_X + 0.22,
-      y: y + 0.3,
-      w: CONTENT_W - 0.22,
-      h: comment ? height - 0.65 : height - 0.3,
-      valign: "top",
-      fit: "shrink",
-      wrap: true
-    });
-    if (comment) {
-      slide.addText(textToRuns(comment, { fontFace: "Malgun Gothic", fontSize: 13, italic: true, color: COLOR.muted }), {
-        x: MARGIN_X + 0.22,
-        y: y + height - 0.35,
-        w: CONTENT_W - 0.22,
-        h: 0.35,
-        valign: "top",
-        fit: "shrink",
-        wrap: true
+    if (kind === "model" && stage >= row.step) {
+      renderAnswerBlock(pptx, slide, {
+        y,
+        height,
+        label: "정답",
+        color: COLOR.correct,
+        bodyText: row.sentence.model,
+        comment: null
       });
     }
   }
@@ -210,11 +259,20 @@
     });
   }
 
+  function studentLabel(student, index) {
+    const name = (student.name || "").trim();
+    return name || `학생 ${index + 1}`;
+  }
+
   function collectWrongAnswers(sentence, students) {
     return (students || [])
-      .map(student => student.answers && student.answers[sentence.id])
-      .filter(answer => answer && answer.text && answer.text.trim())
-      .map(answer => ({ text: answer.text, comment: answer.comment || "" }));
+      .map((student, index) => ({ student, index, answer: student.answers && student.answers[sentence.id] }))
+      .filter(({ answer }) => answer && answer.text && answer.text.trim())
+      .map(({ student, index, answer }) => ({
+        text: answer.text,
+        comment: answer.comment || "",
+        name: studentLabel(student, index)
+      }));
   }
 
   async function exportLesson(lesson) {
@@ -242,7 +300,7 @@
         physicalIndex += 1;
         const slide = pptx.addSlide();
         slide.background = { color: "FFFFFF" };
-        rows.filter(row => row.step <= stage).forEach(row => renderRow(pptx, slide, row));
+        rows.forEach(row => renderRow(pptx, slide, row, stage));
         addCounter(slide, physicalIndex, totalPhysicalSlides);
       }
     });
