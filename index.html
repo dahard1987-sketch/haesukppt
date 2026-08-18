@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>복습 슬라이드 스튜디오</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="app-header">
+    <h1>복습 슬라이드 스튜디오</h1>
+    <div class="toolbar-spacer"></div>
+    <button type="button" id="exportPptxBtn">PPT로 내보내기</button>
+  </header>
+
+  <section id="editorView" class="view">
+    <div class="editor-tabs">
+      <button type="button" class="editor-tab active" data-tab="passage">① 원문 입력</button>
+      <button type="button" class="editor-tab" data-tab="grading">② 학생별 채점</button>
+    </div>
+
+    <div id="passagePanel" class="editor-panel">
+      <div class="editor-toolbar">
+        <button type="button" id="addSentenceBtn">+ 새 문장 (⌘/Ctrl+Enter)</button>
+      </div>
+      <div id="sentenceList" class="sentence-list"></div>
+      <button type="button" id="addSentenceBottomBtn" class="add-sentence-bottom">+ 새 문장 추가</button>
+    </div>
+
+    <div id="gradingPanel" class="editor-panel" hidden>
+      <div class="student-switcher">
+        <div id="studentChips" class="student-chips"></div>
+        <button type="button" id="addStudentBtn">+ 학생 추가</button>
+      </div>
+      <div id="gradingList" class="grading-list"></div>
+    </div>
+  </section>
+
+  <script src="vendor/pptxgen.bundle.js"></script>
+  <script src="markup.js"></script>
+  <script src="storage.js"></script>
+  <script src="slides.js"></script>
+  <script src="editor.js"></script>
+  <script src="pptx-export.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
