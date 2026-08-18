@@ -13,15 +13,41 @@
   const SLIDE_H = 7.5;
   const MARGIN_X = 0.9;
   const CONTENT_W = SLIDE_W - MARGIN_X * 2;
+  const BODY_W = CONTENT_W - 0.22;
   const TOP_Y = 0.7;
   const BOTTOM_Y = 6.9;
 
   // A sentence can accumulate one wrong answer per student -- with a full
-  // class that can be a lot. Rather than growing the slide forever (and
-  // shrinking every box into illegibility), only this many are ever shown
-  // on screen at once; each new click still reveals the next student's
-  // mistake, but the oldest one on screen rolls off to make room.
+  // class that can be a lot. Rather than growing the slide forever, only
+  // this many are ever shown on screen at once; each new click still
+  // reveals the next student's mistake, but the oldest one on screen rolls
+  // off to make room.
   const MAX_VISIBLE_WRONG = 4;
+
+  // Real point/inch text metrics, not guessed character-per-line ratios.
+  // Korean (Malgun Gothic) glyphs are close to full-width (~1em advance);
+  // treating them as narrower than that is what previously caused text to
+  // wrap onto more lines than the box was sized for, and overlap the
+  // element below it. Better to slightly over-estimate line count (a bit
+  // of extra whitespace) than under-estimate it (overlapping text).
+  const PT_TO_IN = 1 / 72;
+  const LINE_HEIGHT_MULT = 1.3;
+  const CHAR_WIDTH_RATIO = { latinBold: 0.62, korean: 1.0 };
+
+  const FONT = { english: 26, label: 11, body: 18, comment: 13 };
+  const FONT_FLOOR = { english: 15, label: 9, body: 12, comment: 9 };
+
+  function lineHeightIn(fontPt) {
+    return fontPt * LINE_HEIGHT_MULT * PT_TO_IN;
+  }
+
+  function charsPerLine(boxWidthIn, fontPt, widthRatio) {
+    return Math.max(6, Math.floor(boxWidthIn / (fontPt * PT_TO_IN * widthRatio)));
+  }
+
+  function scaledFont(base, floor, scale) {
+    return Math.max(floor, Math.round(base * scale));
+  }
 
   function flattenMarkup(nodes, style) {
     let runs = [];
@@ -60,16 +86,50 @@
     });
   }
 
-  function estimateLines(text, charsPerLine) {
+  function estimateLines(text, cpl) {
     const plain = window.Markup.stripMarkup(text || "");
     if (!plain) return 1;
-    return Math.max(1, Math.ceil(plain.length / charsPerLine));
+    return Math.max(1, Math.ceil(plain.length / cpl));
   }
 
-  // The last MAX_VISIBLE_WRONG answers revealed so far, oldest first --
-  // used both to pick what's on screen and to size the box generously
-  // (sizing is based on the whole set, so it never has to change size
-  // when the content rotating through it changes).
+  // Measures how tall an english-sentence row needs to be at a given scale.
+  function measureEnglish(text, scale) {
+    const fontPt = scaledFont(FONT.english, FONT_FLOOR.english, scale);
+    const lines = estimateLines(text, charsPerLine(CONTENT_W, fontPt, CHAR_WIDTH_RATIO.latinBold));
+    const numberH = 0.3 * scale;
+    const bodyH = lines * lineHeightIn(fontPt);
+    return { fontPt, lines, numberH, bodyH, total: numberH + bodyH + 0.1 * scale };
+  }
+
+  // Measures an answer block (label + body + optional comment) at a given scale.
+  function measureAnswerBlock(bodyText, comment, scale) {
+    const labelH = 0.28 * scale;
+    const bodyFontPt = scaledFont(FONT.body, FONT_FLOOR.body, scale);
+    const bodyLines = estimateLines(bodyText, charsPerLine(BODY_W, bodyFontPt, CHAR_WIDTH_RATIO.korean));
+    const bodyH = bodyLines * lineHeightIn(bodyFontPt);
+
+    let commentFontPt = 0;
+    let commentH = 0;
+    if (comment) {
+      commentFontPt = scaledFont(FONT.comment, FONT_FLOOR.comment, scale);
+      const commentLines = estimateLines(comment, charsPerLine(BODY_W, commentFontPt, CHAR_WIDTH_RATIO.korean));
+      commentH = 0.05 * scale + commentLines * lineHeightIn(commentFontPt);
+    }
+
+    return {
+      bodyFontPt,
+      commentFontPt,
+      labelH,
+      bodyH,
+      commentH,
+      total: labelH + bodyH + commentH + 0.12 * scale
+    };
+  }
+
+  // The last MAX_VISIBLE_WRONG answers revealed so far -- used both to pick
+  // what's on screen and to size the slot generously (sizing is based on
+  // the whole set, so the box never has to resize as content rotates
+  // through it).
   function visibleWindow(wrongAnswers, revealedCount) {
     const cap = Math.min(wrongAnswers.length, MAX_VISIBLE_WRONG);
     const start = Math.max(0, revealedCount - cap);
@@ -101,32 +161,62 @@
     return { rows, totalSteps: step };
   }
 
-  function rowWeight(row) {
-    if (row.kind === "divider") return 0.3;
-    if (row.kind === "english") return 1.2 + 0.4 * estimateLines(row.sentence.english, 46);
+  // Natural (unscaled) height a row needs -- for wrongSlot this is sized
+  // for whichever answer could ever occupy it, not just the first one.
+  function naturalHeight(row) {
+    if (row.kind === "divider") return 0.28;
+    if (row.kind === "english") return measureEnglish(row.sentence.english, 1).total;
     if (row.kind === "wrongSlot") {
-      // Sized for whichever answer could end up here, not just the first one.
-      const maxLines = row.sentence.wrongAnswers.reduce((max, w) => Math.max(max, estimateLines(w.text, 58)), 1);
-      const anyComment = row.sentence.wrongAnswers.some(w => w.comment);
-      return 1 + 0.4 * maxLines + (anyComment ? 0.65 : 0);
+      return row.sentence.wrongAnswers.reduce(
+        (max, w) => Math.max(max, measureAnswerBlock(w.text, w.comment, 1).total),
+        measureAnswerBlock("", null, 1).total
+      );
     }
-    if (row.kind === "model") return 1 + 0.4 * estimateLines(row.sentence.model, 58);
-    return 1;
+    if (row.kind === "model") return measureAnswerBlock(row.sentence.model, null, 1).total;
+    return 0.3;
   }
 
   // Computes a fixed y/height for every row up front, so a row never moves
   // between the reveal-stage slides of the same group -- only new rows
   // appear below what's already there, and slot contents rotate in place.
+  // If the natural (fully-legible) sizes don't all fit in the available
+  // height, every row is scaled down together (font size included) so
+  // content shrinks uniformly instead of overflowing its box.
   function layoutRows(sentences) {
     const { rows, totalSteps } = buildRows(sentences);
-    const totalWeight = rows.reduce((sum, row) => sum + rowWeight(row), 0);
+    rows.forEach(row => { row.naturalHeight = naturalHeight(row); });
+
+    const naturalTotal = rows.reduce((sum, row) => sum + row.naturalHeight, 0);
     const usableHeight = BOTTOM_Y - TOP_Y;
-    const contentHeight = Math.min(usableHeight, totalWeight * (usableHeight / totalWeight));
+    const floorScale = FONT_FLOOR.body / FONT.body;
+    const scale = Math.max(floorScale, Math.min(1, usableHeight / naturalTotal));
+
+    const contentHeight = rows.reduce((sum, row) => {
+      if (row.kind === "divider") return sum + row.naturalHeight;
+      if (row.kind === "english") return sum + measureEnglish(row.sentence.english, scale).total;
+      if (row.kind === "wrongSlot") {
+        const h = row.sentence.wrongAnswers.reduce(
+          (max, w) => Math.max(max, measureAnswerBlock(w.text, w.comment, scale).total),
+          measureAnswerBlock("", null, scale).total
+        );
+        return sum + h;
+      }
+      if (row.kind === "model") return sum + measureAnswerBlock(row.sentence.model, null, scale).total;
+      return sum;
+    }, 0);
     const verticalOffset = Math.max(0, (usableHeight - contentHeight) / 2) * 0.4;
 
     let cursorY = TOP_Y + verticalOffset;
     rows.forEach(row => {
-      row.height = (rowWeight(row) / totalWeight) * (usableHeight - verticalOffset);
+      row.scale = scale;
+      if (row.kind === "english") row.height = measureEnglish(row.sentence.english, scale).total;
+      else if (row.kind === "wrongSlot") {
+        row.height = row.sentence.wrongAnswers.reduce(
+          (max, w) => Math.max(max, measureAnswerBlock(w.text, w.comment, scale).total),
+          measureAnswerBlock("", null, scale).total
+        );
+      } else if (row.kind === "model") row.height = measureAnswerBlock(row.sentence.model, null, scale).total;
+      else row.height = row.naturalHeight;
       row.y = cursorY;
       cursorY += row.height;
     });
@@ -145,14 +235,16 @@
     });
   }
 
-  function renderAnswerBlock(pptx, slide, { y, height, label, color, bodyText, comment }) {
-    addBar(pptx, slide, MARGIN_X, y + 0.04, height - 0.08, color);
+  function renderAnswerBlock(pptx, slide, { y, color, label, bodyText, comment, scale }) {
+    const measured = measureAnswerBlock(bodyText, comment, scale);
+    addBar(pptx, slide, MARGIN_X, y + 0.04, measured.total - 0.08, color);
+
     slide.addText(label, {
       x: MARGIN_X + 0.22,
       y,
       w: CONTENT_W - 0.22,
-      h: 0.28,
-      fontSize: 11,
+      h: measured.labelH,
+      fontSize: scaledFont(FONT.label, FONT_FLOOR.label, scale),
       bold: true,
       color,
       charSpacing: 1.2,
@@ -160,35 +252,36 @@
       fit: "shrink",
       wrap: false
     });
-    slide.addText(textToRuns(bodyText, { fontFace: "Malgun Gothic", fontSize: 19, color: COLOR.ink }), {
+
+    const bodyY = y + measured.labelH;
+    slide.addText(textToRuns(bodyText, { fontFace: "Malgun Gothic", fontSize: measured.bodyFontPt, color: COLOR.ink }), {
       x: MARGIN_X + 0.22,
-      y: y + 0.3,
-      w: CONTENT_W - 0.22,
-      h: comment ? height - 0.65 : height - 0.3,
+      y: bodyY,
+      w: BODY_W,
+      h: measured.bodyH,
       valign: "top",
-      fit: "shrink",
       wrap: true
     });
+
     if (comment) {
-      slide.addText(textToRuns(comment, { fontFace: "Malgun Gothic", fontSize: 13, italic: true, color: COLOR.muted }), {
+      slide.addText(textToRuns(comment, { fontFace: "Malgun Gothic", fontSize: measured.commentFontPt, italic: true, color: COLOR.muted }), {
         x: MARGIN_X + 0.22,
-        y: y + height - 0.35,
-        w: CONTENT_W - 0.22,
-        h: 0.35,
+        y: bodyY + measured.bodyH,
+        w: BODY_W,
+        h: measured.commentH,
         valign: "top",
-        fit: "shrink",
         wrap: true
       });
     }
   }
 
   function renderRow(pptx, slide, row, stage) {
-    const { kind, y, height } = row;
+    const { kind, y, scale } = row;
 
     if (kind === "divider") {
       slide.addShape(pptx.ShapeType.line, {
         x: MARGIN_X,
-        y: y + height / 2,
+        y: y + row.height / 2,
         w: CONTENT_W,
         h: 0,
         line: { color: "E8E9ED", width: 0.75 }
@@ -197,22 +290,22 @@
     }
 
     if (kind === "english") {
+      const measured = measureEnglish(row.sentence.english, scale);
       slide.addText(String(row.sentence.number), {
         x: MARGIN_X,
         y,
         w: 0.5,
-        h: 0.28,
+        h: measured.numberH,
         fontSize: 12,
         color: COLOR.muted,
         fontFace: "Menlo"
       });
-      slide.addText(textToRuns(row.sentence.english, { fontFace: "Arial", fontSize: 27, bold: true, color: COLOR.ink }), {
+      slide.addText(textToRuns(row.sentence.english, { fontFace: "Arial", fontSize: measured.fontPt, bold: true, color: COLOR.ink }), {
         x: MARGIN_X,
-        y: y + 0.3,
+        y: y + measured.numberH,
         w: CONTENT_W,
-        h: height - 0.3,
+        h: measured.bodyH,
         valign: "top",
-        fit: "shrink",
         wrap: true
       });
       return;
@@ -225,7 +318,7 @@
       if (!wrong) return;
       renderAnswerBlock(pptx, slide, {
         y,
-        height,
+        scale,
         label: wrong.name || "오답",
         color: COLOR.accent,
         bodyText: wrong.text,
@@ -237,7 +330,7 @@
     if (kind === "model" && stage >= row.step) {
       renderAnswerBlock(pptx, slide, {
         y,
-        height,
+        scale,
         label: "정답",
         color: COLOR.correct,
         bodyText: row.sentence.model,
